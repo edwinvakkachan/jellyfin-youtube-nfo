@@ -1,0 +1,13 @@
+{
+  "name": "yt-nfo-generator",
+  "version": "1.0.0",
+  "description": "",
+  "main": "generateNfoFromVideoId.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node generateNfoFromVideoId.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.0"
+  }
+}
