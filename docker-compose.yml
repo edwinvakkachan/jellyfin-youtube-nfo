@@ -3,7 +3,7 @@ version: '3.8'
 services:
   yt-nfo-generator:
     build: .
-    container_name: ytnfogenerator
+    container_name: youtubedatafetch
     volumes:
       - /srv/dev-disk-by-uuid-71f50e81-4a2b-4a69-a58f-76d579bd27f6/1tb/App/tubearchivist/media:/app/media
     restart: "no"
