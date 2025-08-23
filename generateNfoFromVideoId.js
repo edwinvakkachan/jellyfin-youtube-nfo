@@ -9,7 +9,7 @@ const MEDIA_ROOT = path.join(__dirname, "media");
    Helpers for pacing + logging
    ----------------------------- */
 function jitter(min, max) {
-  return (min + Math.random() * (max - min)).toFixed(2);
+  return (min + Math.random() * (max - min)).toFixed(2); // string float
 }
 
 function sleepMs(ms) {
@@ -43,10 +43,22 @@ function flagsToString(arr) {
   return arr.map(a => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
 }
 
-// Generate Jellyfin-compatible .nfo for videos
+/* -----------------------------
+   Track async thumbnail tasks so we can exit cleanly
+   ----------------------------- */
+let PENDING_ASYNC = 0;
+function track(promise) {
+  PENDING_ASYNC++;
+  promise.finally(() => { PENDING_ASYNC--; });
+  return promise;
+}
+
+/* -----------------------------
+   NFO generators (unchanged structure)
+   ----------------------------- */
 function generateVideoNfo(data) {
-  const uploadDate = data.upload_date 
-    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") 
+  const uploadDate = data.upload_date
+    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3")
     : "";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
@@ -63,10 +75,9 @@ function generateVideoNfo(data) {
 </movie>`;
 }
 
-// Generate tvshow.nfo for channel
 function generateChannelNfo(data) {
-  const uploadDate = data.upload_date 
-    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") 
+  const uploadDate = data.upload_date
+    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3")
     : "";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
@@ -82,7 +93,9 @@ function generateChannelNfo(data) {
 </tvshow>`;
 }
 
-// Process single video
+/* -----------------------------
+   Core processing
+   ----------------------------- */
 function processVideo(filePath, folderPath) {
   const videoId = path.parse(filePath).name;
   const base = path.join(folderPath, videoId);
@@ -98,7 +111,7 @@ function processVideo(filePath, folderPath) {
       execSync(`yt-dlp ${safeFlags} -o "${base}" https://www.youtube.com/watch?v=${videoId}`, {
         stdio: ["ignore", "pipe", "pipe"]
       });
-      sleepMs(400 + Math.random() * 400);
+      sleepMs(400 + Math.random() * 400); // tiny cool-down
     } catch (err) {
       log(`❌ yt-dlp failed for video ${videoId}: ${err.message}`);
       return;
@@ -116,16 +129,17 @@ function processVideo(filePath, folderPath) {
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
-    sharp(webpPath)
-      .toFile(jpgPath)
-      .then(() => log(`🖼️ Converted thumbnail to .jpg for video ${videoId}`))
-      .catch(err => log(`❌ Thumbnail error: ${err.message}`));
+    track(
+      sharp(webpPath)
+        .toFile(jpgPath)
+        .then(() => log(`🖼️ Converted thumbnail to .jpg for video ${videoId}`))
+        .catch(err => log(`❌ Thumbnail error: ${err.message}`))
+    );
   }
 
   sleepMs(300 + Math.random() * 500); // tiny pause before next file
 }
 
-// Process channel-level metadata
 function processChannel(folderPath, channelId) {
   const channelJson = path.join(folderPath, `${channelId}.info.json`);
   const webpPath = path.join(folderPath, `${channelId}.webp`);
@@ -157,19 +171,24 @@ function processChannel(folderPath, channelId) {
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
-    sharp(webpPath)
-      .toFile(jpgPath)
-      .then(() => log(`🖼️ Created folder.jpg for channel ${channelId}`))
-      .catch(err => log(`❌ Folder.jpg conversion failed: ${err.message}`));
+    track(
+      sharp(webpPath)
+        .toFile(jpgPath)
+        .then(() => log(`🖼️ Created folder.jpg for channel ${channelId}`))
+        .catch(err => log(`❌ Folder.jpg conversion failed: ${err.message}`))
+    );
   }
 
   sleepMs(500 + Math.random() * 800); // tiny pause after channel work
 }
 
-// Process all folders
+/* -----------------------------
+   Orchestration
+   ----------------------------- */
 function processAllChannels() {
   if (!fs.existsSync(MEDIA_ROOT)) {
     log("❌ Media folder not found");
+    finishAndExit();
     return;
   }
 
@@ -177,7 +196,9 @@ function processAllChannels() {
   let processed = 0;
 
   channels.forEach(channelId => {
-    if (channelId.startsWith(".")) return; // skip system/hidden dirs
+    // skip system/hidden dirs like .stfolder, .git, etc.
+    if (channelId.startsWith(".")) return;
+
     const channelPath = path.join(MEDIA_ROOT, channelId);
     if (!fs.statSync(channelPath).isDirectory()) return;
 
@@ -194,7 +215,37 @@ function processAllChannels() {
   });
 
   log(`🎉 Completed processing. Channels scanned: ${processed}`);
+  log(`✅ All folders are scanned. Going to stop container now.`);
+
+  finishAndExit();
 }
 
-// Run once
+/* -----------------------------
+   Graceful exit helper
+   ----------------------------- */
+function finishAndExit() {
+  // Wait a short time for pending async thumbnail conversions to finish
+  const start = Date.now();
+  const MAX_WAIT_MS = 10000; // 10s cap
+  const CHECK_INTERVAL = 200;
+
+  while (PENDING_ASYNC > 0 && (Date.now() - start) < MAX_WAIT_MS) {
+    log(`⏳ Waiting for ${PENDING_ASYNC} pending image task(s) before exit...`);
+    sleepMs(CHECK_INTERVAL);
+  }
+
+  if (PENDING_ASYNC > 0) {
+    log(`⚠ Exiting with ${PENDING_ASYNC} image task(s) still pending (timeout reached).`);
+  } else {
+    log(`🟢 All background image tasks completed.`);
+  }
+
+  log(`👋 Exiting process now.`);
+  // Explicitly exit so container stops
+  process.exit(0);
+}
+
+/* -----------------------------
+   Run once
+   ----------------------------- */
 processAllChannels();
