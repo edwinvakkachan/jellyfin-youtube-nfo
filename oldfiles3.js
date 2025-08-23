@@ -6,24 +6,20 @@ const sharp = require("sharp");
 const MEDIA_ROOT = path.join(__dirname, "media");
 
 /* -----------------------------
-   Helpers for pacing + logging
+   ADDED: polite yt-dlp flags (single values, not ranges)
    ----------------------------- */
 function jitter(min, max) {
+  // random float as string, e.g. "2.13"
   return (min + Math.random() * (max - min)).toFixed(2);
 }
 
-function sleepMs(ms) {
-  const sab = new SharedArrayBuffer(4);
-  const ia = new Int32Array(sab);
-  Atomics.wait(ia, 0, 0, ms);
-}
-
-function log(msg) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] ${msg}`);
-}
-
 function buildSafeFlags() {
+  // construct once per call so sleeps are randomized each time
+  const limitRate = process.env.YTDLP_LIMIT_RATE || "2M";
+  const concFrags = process.env.YTDLP_CONCURRENT_FRAGMENTS || "1";
+  const retries = process.env.YTDLP_RETRIES || "3";
+  const retrySleep = process.env.YTDLP_RETRY_SLEEP || "2";
+
   return [
     "--skip-download",
     "--no-overwrites",
@@ -32,10 +28,10 @@ function buildSafeFlags() {
     "--sleep-requests", jitter(1, 3),
     "--sleep-interval", jitter(1, 3),
     "--max-sleep-interval", "5",
-    "--limit-rate", process.env.YTDLP_LIMIT_RATE || "2M",
-    "--concurrent-fragments", process.env.YTDLP_CONCURRENT_FRAGMENTS || "1",
-    "--retries", process.env.YTDLP_RETRIES || "3",
-    "--retry-sleep", process.env.YTDLP_RETRY_SLEEP || "2"
+    "--limit-rate", limitRate,
+    "--concurrent-fragments", concFrags,
+    "--retries", retries,
+    "--retry-sleep", retrySleep
   ];
 }
 
@@ -46,7 +42,7 @@ function flagsToString(arr) {
 // Generate Jellyfin-compatible .nfo for videos
 function generateVideoNfo(data) {
   const uploadDate = data.upload_date 
-    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") 
+    ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") // Format: YYYY-MM-DD
     : "";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
@@ -63,7 +59,7 @@ function generateVideoNfo(data) {
 </movie>`;
 }
 
-// Generate tvshow.nfo for channel
+// Generate tvshow.nfo for channel (Jellyfin-compatible)
 function generateChannelNfo(data) {
   const uploadDate = data.upload_date 
     ? data.upload_date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") 
@@ -82,7 +78,7 @@ function generateChannelNfo(data) {
 </tvshow>`;
 }
 
-// Process single video
+// Process single video (NO filename changes)
 function processVideo(filePath, folderPath) {
   const videoId = path.parse(filePath).name;
   const base = path.join(folderPath, videoId);
@@ -92,15 +88,14 @@ function processVideo(filePath, folderPath) {
   const jpgPath = `${base}.jpg`;
 
   if (!fs.existsSync(jsonPath)) {
-    log(`📥 Fetching video metadata: ${videoId}`);
+    console.log(`📥 Downloading metadata for: ${videoId}`);
     try {
       const safeFlags = flagsToString(buildSafeFlags());
       execSync(`yt-dlp ${safeFlags} -o "${base}" https://www.youtube.com/watch?v=${videoId}`, {
         stdio: ["ignore", "pipe", "pipe"]
       });
-      sleepMs(400 + Math.random() * 400);
     } catch (err) {
-      log(`❌ yt-dlp failed for video ${videoId}: ${err.message}`);
+      console.error(`❌ yt-dlp failed for ${videoId}:`, err.message);
       return;
     }
   }
@@ -109,23 +104,21 @@ function processVideo(filePath, folderPath) {
     try {
       const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
       fs.writeFileSync(nfoPath, generateVideoNfo(data));
-      log(`✅ Created .nfo for video ${videoId}`);
+      console.log(`✅ Created Jellyfin .nfo for ${videoId}`);
     } catch (err) {
-      log(`❌ Failed to write .nfo for video ${videoId}: ${err.message}`);
+      console.error(`❌ Failed to write .nfo for ${videoId}:`, err.message);
     }
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
     sharp(webpPath)
       .toFile(jpgPath)
-      .then(() => log(`🖼️ Converted thumbnail to .jpg for video ${videoId}`))
-      .catch(err => log(`❌ Thumbnail error: ${err.message}`));
+      .then(() => console.log(`🖼️ Converted thumbnail to .jpg for ${videoId}`))
+      .catch(err => console.error(`❌ Thumbnail error:`, err.message));
   }
-
-  sleepMs(300 + Math.random() * 500); // tiny pause before next file
 }
 
-// Process channel-level metadata
+// Process channel-level metadata (unchanged except safe flags)
 function processChannel(folderPath, channelId) {
   const channelJson = path.join(folderPath, `${channelId}.info.json`);
   const webpPath = path.join(folderPath, `${channelId}.webp`);
@@ -135,14 +128,13 @@ function processChannel(folderPath, channelId) {
 
   if (!fs.existsSync(channelJson)) {
     try {
-      log(`📥 Fetching channel metadata: ${channelId}`);
+      console.log(`📥 Downloading channel metadata for: ${channelId}`);
       const safeFlags = flagsToString(buildSafeFlags());
       execSync(`yt-dlp ${safeFlags} --playlist-end 1 -o "${folderPath}/${channelId}" ${url}`, {
         stdio: ["ignore", "pipe", "pipe"]
       });
-      sleepMs(500 + Math.random() * 700);
     } catch (err) {
-      log(`❌ yt-dlp failed for channel ${channelId}: ${err.message}`);
+      console.error(`❌ Channel yt-dlp failed for ${channelId}:`, err.message);
     }
   }
 
@@ -150,50 +142,43 @@ function processChannel(folderPath, channelId) {
     try {
       const data = JSON.parse(fs.readFileSync(channelJson, "utf-8"));
       fs.writeFileSync(nfoPath, generateChannelNfo(data));
-      log(`✅ Created tvshow.nfo for channel ${channelId}`);
+      console.log(`✅ Created Jellyfin tvshow.nfo for ${channelId}`);
     } catch (err) {
-      log(`❌ Failed to write tvshow.nfo for channel ${channelId}: ${err.message}`);
+      console.error(`❌ Failed to write tvshow.nfo for ${channelId}:`, err.message);
     }
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
     sharp(webpPath)
       .toFile(jpgPath)
-      .then(() => log(`🖼️ Created folder.jpg for channel ${channelId}`))
-      .catch(err => log(`❌ Folder.jpg conversion failed: ${err.message}`));
+      .then(() => console.log(`🖼️ Created folder.jpg for ${channelId}`))
+      .catch(err => console.error(`❌ Folder.jpg conversion failed:`, err.message));
   }
-
-  sleepMs(500 + Math.random() * 800); // tiny pause after channel work
 }
 
 // Process all folders
 function processAllChannels() {
   if (!fs.existsSync(MEDIA_ROOT)) {
-    log("❌ Media folder not found");
+    console.error("❌ Media folder not found");
     return;
   }
 
   const channels = fs.readdirSync(MEDIA_ROOT);
-  let processed = 0;
-
   channels.forEach(channelId => {
-    if (channelId.startsWith(".")) return; // skip system/hidden dirs
+    // ADDED: skip hidden/system dirs like .stfolder, .git, etc.
+    if (channelId.startsWith(".")) return;
+
     const channelPath = path.join(MEDIA_ROOT, channelId);
     if (!fs.statSync(channelPath).isDirectory()) return;
 
-    log(`📂 Processing channel: ${channelId}`);
+    console.log(`📂 Processing channel: ${channelId}`);
     processChannel(channelPath, channelId);
 
     const files = fs.readdirSync(channelPath);
     files.filter(f => f.endsWith(".mp4")).forEach(file => {
       processVideo(path.join(channelPath, file), channelPath);
     });
-
-    processed++;
-    log(`--- DONE with channel ${channelId} ---`);
   });
-
-  log(`🎉 Completed processing. Channels scanned: ${processed}`);
 }
 
 // Run once
