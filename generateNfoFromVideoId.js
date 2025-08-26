@@ -6,24 +6,33 @@ const sharp = require("sharp");
 
 const MEDIA_ROOT = path.join(__dirname, "media");
 
-/* -----------------------------
-   Helpers for pacing + logging
-   ----------------------------- */
-function jitter(min, max) {
-  return (min + Math.random() * (max - min)).toFixed(2); // string float
+// ---------- Helpers ----------
+const TZ = "Asia/Kolkata";
+function nowIST() {
+  return new Date().toLocaleString("en-IN", {
+    timeZone: TZ,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
-// NOTE: Keep this for tiny pacing inside processing steps.
-// Do NOT use blocking sleeps during shutdown awaiting async tasks.
+function log(msg) {
+  console.log(`[${nowIST()}] ${msg}`);
+}
+
+function jitter(min, max) {
+  return (min + Math.random() * (max - min)).toFixed(2);
+}
+
 function sleepMs(ms) {
   const sab = new SharedArrayBuffer(4);
   const ia = new Int32Array(sab);
   Atomics.wait(ia, 0, 0, ms);
-}
-
-function log(msg) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] ${msg}`);
 }
 
 function buildSafeFlags() {
@@ -46,28 +55,21 @@ function flagsToString(arr) {
   return arr.map(a => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
 }
 
-/* -----------------------------
-   Track async thumbnail tasks so we can exit cleanly
-   ----------------------------- */
-// Use a Set so we can await all current tasks reliably.
+// ---------- Track async thumbnail tasks ----------
 const PENDING_SET = new Set();
-
-/** Track a promise; remove when settled. */
 function track(promise) {
   PENDING_SET.add(promise);
   promise.finally(() => PENDING_SET.delete(promise));
   return promise;
 }
 
-/** Non-blocking wait for all pending tasks to finish (or timeout). */
 async function waitForPendingAndExit() {
-  const MAX_PENDING_WAIT_MS = Number(process.env.MAX_PENDING_WAIT_MS ?? 10 * 60 * 1000); // default 10 min
-  const PENDING_LOG_EVERY_MS = Number(process.env.PENDING_LOG_EVERY_MS ?? 1000);        // default 1s
+  const MAX_PENDING_WAIT_MS = Number(process.env.MAX_PENDING_WAIT_MS ?? 10 * 60 * 1000);
+  const PENDING_LOG_EVERY_MS = Number(process.env.PENDING_LOG_EVERY_MS ?? 1000);
 
   const start = Date.now();
   let lastLog = 0;
 
-  // Loop while there are tasks AND time remains; do NOT block the event loop.
   for (;;) {
     const remaining = MAX_PENDING_WAIT_MS - (Date.now() - start);
     const count = PENDING_SET.size;
@@ -77,7 +79,7 @@ async function waitForPendingAndExit() {
       break;
     }
     if (remaining <= 0) {
-      log(`⚠ Exiting with ${count} image task(s) still pending (timeout reached).`);
+      log(`⚠ Exiting with ${count} image task(s) still pending (timeout).`);
       break;
     }
 
@@ -86,8 +88,6 @@ async function waitForPendingAndExit() {
       log(`⏳ Waiting for ${count} pending image task(s) before exit...`);
       lastLog = now;
     }
-
-    // Yield to the event loop so sharp/libuv can resolve the promises.
     await new Promise(r => setTimeout(r, Math.min(PENDING_LOG_EVERY_MS, remaining)));
   }
 
@@ -95,9 +95,7 @@ async function waitForPendingAndExit() {
   process.exit(0);
 }
 
-/* -----------------------------
-   NFO generators (unchanged structure)
-   ----------------------------- */
+// ---------- NFO generators ----------
 function escapeXml(text = "") {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -113,7 +111,7 @@ function generateVideoNfo(data) {
   <plot>${escapeXml(data.description || "")}</plot>
   <studio>${escapeXml(data.uploader || "Unknown Channel")}</studio>
   <premiered>${uploadDate}</premiered>
-  <dateadded>${new Date().toISOString()}</dateadded>
+  <dateadded>${nowIST()}</dateadded>
   <aired>${uploadDate}</aired>
   <year>${uploadDate.split("-")[0] || ""}</year>
   <uniqueid type="youtube">${data.id || ""}</uniqueid>
@@ -132,16 +130,16 @@ function generateChannelNfo(data) {
   <plot>${escapeXml(data.description || "")}</plot>
   <studio>YouTube</studio>
   <premiered>${uploadDate}</premiered>
-  <dateadded>${new Date().toISOString()}</dateadded>
+  <dateadded>${nowIST()}</dateadded>
   <year>${uploadDate.split("-")[0] || ""}</year>
   <uniqueid type="youtube">${data.id || data.channel_id || ""}</uniqueid>
   <genre>YouTube</genre>
 </tvshow>`;
 }
 
-/* -----------------------------
-   Core processing
-   ----------------------------- */
+// ---------- Processing ----------
+let counters = { channels: 0, videos: 0, thumbs: 0 };
+
 function processVideo(filePath, folderPath) {
   const videoId = path.parse(filePath).name;
   const base = path.join(folderPath, videoId);
@@ -150,14 +148,16 @@ function processVideo(filePath, folderPath) {
   const webpPath = `${base}.webp`;
   const jpgPath = `${base}.jpg`;
 
+  counters.videos++;
+
   if (!fs.existsSync(jsonPath)) {
-    log(`📥 Fetching video metadata: ${videoId}`);
+    log(`📥 Fetching metadata for video: ${videoId}`);
     try {
       const safeFlags = flagsToString(buildSafeFlags());
       execSync(`yt-dlp ${safeFlags} -o "${base}" https://www.youtube.com/watch?v=${videoId}`, {
         stdio: ["ignore", "pipe", "pipe"]
       });
-      sleepMs(400 + Math.random() * 400); // tiny cool-down
+      sleepMs(400 + Math.random() * 400);
     } catch (err) {
       log(`❌ yt-dlp failed for video ${videoId}: ${err.message}`);
       return;
@@ -175,6 +175,7 @@ function processVideo(filePath, folderPath) {
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
+    counters.thumbs++;
     track(
       sharp(webpPath)
         .toFile(jpgPath)
@@ -183,10 +184,11 @@ function processVideo(filePath, folderPath) {
     );
   }
 
-  sleepMs(300 + Math.random() * 500); // tiny pause before next file
+  sleepMs(300 + Math.random() * 500);
 }
 
 function processChannel(folderPath, channelId) {
+  counters.channels++;
   const channelJson = path.join(folderPath, `${channelId}.info.json`);
   const webpPath = path.join(folderPath, `${channelId}.webp`);
   const jpgPath = path.join(folderPath, `folder.jpg`);
@@ -217,6 +219,7 @@ function processChannel(folderPath, channelId) {
   }
 
   if (fs.existsSync(webpPath) && !fs.existsSync(jpgPath)) {
+    counters.thumbs++;
     track(
       sharp(webpPath)
         .toFile(jpgPath)
@@ -225,26 +228,24 @@ function processChannel(folderPath, channelId) {
     );
   }
 
-  sleepMs(500 + Math.random() * 800); // tiny pause after channel work
+  sleepMs(500 + Math.random() * 800);
 }
 
-/* -----------------------------
-   Orchestration
-   ----------------------------- */
+// ---------- Orchestration ----------
 async function processAllChannels() {
+  const startedAt = Date.now();
+  log("🟢 Starting full media scan...");
+
   if (!fs.existsSync(MEDIA_ROOT)) {
     log("❌ Media folder not found");
-    await waitForPendingAndExit(); // nothing pending, but keeps flow uniform
+    await waitForPendingAndExit();
     return;
   }
 
   const channels = fs.readdirSync(MEDIA_ROOT);
-  let processed = 0;
 
   channels.forEach(channelId => {
-    // skip system/hidden dirs like .stfolder, .git, etc.
     if (channelId.startsWith(".")) return;
-
     const channelPath = path.join(MEDIA_ROOT, channelId);
     if (!fs.statSync(channelPath).isDirectory()) return;
 
@@ -256,19 +257,18 @@ async function processAllChannels() {
       processVideo(path.join(channelPath, file), channelPath);
     });
 
-    processed++;
     log(`--- DONE with channel ${channelId} ---`);
   });
 
-  log(`🎉 Completed processing. Channels scanned: ${processed}`);
-  log(`✅ All folders are scanned. Going to stop container now.`);
+  const duration = ((Date.now() - startedAt) / 1000).toFixed(2);
+  log(`🎉 Completed processing.`);
+  log(`🧾 Summary: Channels=${counters.channels}, Videos=${counters.videos}, Thumbnails=${counters.thumbs}`);
+  log(`⏱️ Duration: ${duration}s (Started: ${new Date(startedAt).toLocaleString("en-IN",{timeZone:TZ})}, Finished: ${nowIST()})`);
   await waitForPendingAndExit();
 }
 
-/* -----------------------------
-   Run once
-   ----------------------------- */
+// ---------- Run once ----------
 processAllChannels().catch(err => {
-  console.error(`[${new Date().toISOString()}] Fatal error:`, err);
+  console.error(`[${nowIST()}] Fatal error:`, err);
   process.exit(1);
 });
