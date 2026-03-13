@@ -6,6 +6,9 @@ services:
     container_name: youtubedatafetch
     volumes:
       - /srv/dev-disk-by-uuid-71f50e81-4a2b-4a69-a58f-76d579bd27f6/1tb/App/tubearchivist/media:/app/media
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     restart: "no"
 
 
