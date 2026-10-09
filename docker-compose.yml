@@ -12,6 +12,7 @@ services:
       MONGODB_DB: tubearchivist
       SOURCE_COLLECTION: jellyfin_sync
       MEDIA_ROOT: /media
+      REGENERATE_NFO: "true"
 
       REQUIRE_THUMBNAIL: "false"
 
