@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export async function updateChannelDateAdded(folderPath) {
   const channelNfo = path.join(folderPath, "tvshow.nfo");
 
