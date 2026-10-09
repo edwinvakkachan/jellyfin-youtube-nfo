@@ -123,7 +123,6 @@ function generateVideoNfo(data) {
   <plot>${escapeXml(data.description || "")}</plot>
   <studio>${escapeXml(data.channel || data.uploader || "Unknown Channel")}</studio>
   <premiered>${uploadDate}</premiered>
-  <dateadded>${new Date().toISOString()}</dateadded>
   <aired>${uploadDate}</aired>
   <year>${year}</year>
 ${runtimeXml}
