@@ -5,7 +5,11 @@ services:
     build: .
     container_name: youtubedatafetch
     volumes:
-      - /srv/dev-disk-by-uuid-71f50e81-4a2b-4a69-a58f-76d579bd27f6/1tb/App/tubearchivist/media:/app/media
+      - ${MEDIA_HOST_PATH}:/app/media
+
+    environment:
+      MONGODB_URI: ${MONGODB_URI}
+      MEDIA_ROOT: "/media"
     dns:
       - 1.1.1.1
       - 1.0.0.1
