@@ -26,7 +26,7 @@ export async function updateChannelDateAdded(folderPath) {
 
   fs.writeFileSync(channelNfo, content, "utf8");
 
-  log(`📅 Updated channel dateadded: ${path.basename(folderPath)}`);
+  console.log(`📅 Updated channel dateadded: ${path.basename(folderPath)}`);
 
   return true;
 }
