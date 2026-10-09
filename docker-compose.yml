@@ -1,21 +1,27 @@
-version: '3.8'
 
 services:
   yt-nfo-generator:
     build: .
     container_name: youtubedatafetch
+
     volumes:
       - ${MEDIA_HOST_PATH}:/media
 
     environment:
       MONGODB_URI: ${MONGODB_URI}
-      MEDIA_ROOT: "/media"
+      MONGODB_DB: tubearchivist
+      SOURCE_COLLECTION: jellyfin_sync
+      MEDIA_ROOT: /media
+
+      REQUIRE_THUMBNAIL: "false"
+
+      YTDLP_LIMIT_RATE: 2M
+      YTDLP_CONCURRENT_FRAGMENTS: "1"
+      YTDLP_RETRIES: "3"
+      YTDLP_RETRY_SLEEP: "2"
+
     dns:
       - 1.1.1.1
       - 1.0.0.1
+
     restart: "no"
-
-
-
-
-
