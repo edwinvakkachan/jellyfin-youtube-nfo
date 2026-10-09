@@ -86,20 +86,47 @@ function toUploadDate(value) {
 }
 
 function generateVideoNfo(data) {
-  const uploadDate = toUploadDate(data.upload_date);
-  const year = uploadDate ? uploadDate.slice(0, 4) : "";
+  const uploadDate = data.upload_date
+    ? data.upload_date.replace(
+        /(\d{4})(\d{2})(\d{2})/,
+        "$1-$2-$3"
+      )
+    : "";
+
+  const year = uploadDate
+    ? uploadDate.slice(0, 4)
+    : "";
+
+  const genres = Array.isArray(data.categories)
+    ? data.categories
+    : [];
+
+  const tags = Array.isArray(data.tags)
+    ? data.tags
+    : [];
+
+  const genreXml = genres
+    .map(genre => `  <genre>${escapeXml(genre)}</genre>`)
+    .join("\n");
+
+  const tagXml = tags
+    .map(tag => `  <tag>${escapeXml(tag)}</tag>`)
+    .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <movie>
   <title>${escapeXml(data.title || "Unknown Title")}</title>
   <plot>${escapeXml(data.description || "")}</plot>
-  <studio>${escapeXml(data.uploader || data.channel || "Unknown Channel")}</studio>
+  <studio>${escapeXml(
+    data.channel || data.uploader || "Unknown Channel"
+  )}</studio>
   <premiered>${uploadDate}</premiered>
   <dateadded>${new Date().toISOString()}</dateadded>
   <aired>${uploadDate}</aired>
   <year>${year}</year>
   <uniqueid type="youtube">${escapeXml(data.id || "")}</uniqueid>
-  <genre>YouTube</genre>
+${genreXml}
+${tagXml}
 </movie>`;
 }
 
