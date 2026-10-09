@@ -11,11 +11,9 @@ const { MongoClient } = require("mongodb");
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.MONGODB_DB || "tubearchivist";
 
-// Existing scanner collection: READ-ONLY
 const SOURCE_COLLECTION =
   process.env.SOURCE_COLLECTION || "jellyfin_sync";
 
-// Generator-owned collections
 const TRACKING_COLLECTION = "nfo_generator_jobs";
 const STATE_COLLECTION = "nfo_generator_state";
 const STATE_ID = "nfo_generator_baseline_v2";
@@ -25,10 +23,13 @@ const MEDIA_ROOT = path.resolve(
 );
 
 const REQUIRE_THUMBNAIL =
-  String(process.env.REQUIRE_THUMBNAIL || "false").toLowerCase() ===
-  "true";
+  String(process.env.REQUIRE_THUMBNAIL || "false").toLowerCase() === "true";
+
+const REGENERATE_NFO =
+  String(process.env.REGENERATE_NFO || "false").toLowerCase() === "true";
 
 const TZ = "Asia/Kolkata";
+
 const JOB_STATUSES_TO_RETRY = [
   "pending",
   "failed",
@@ -85,18 +86,13 @@ function toUploadDate(value) {
     : "";
 }
 
+// ============================================================
+// VIDEO NFO GENERATION
+// ============================================================
 
 function generateVideoNfo(data) {
-  const uploadDate = data.upload_date
-    ? data.upload_date.replace(
-        /^(\d{4})(\d{2})(\d{2})$/,
-        "$1-$2-$3"
-      )
-    : "";
-
-  const year = uploadDate
-    ? uploadDate.slice(0, 4)
-    : "";
+  const uploadDate = toUploadDate(data.upload_date);
+  const year = uploadDate ? uploadDate.slice(0, 4) : "";
 
   const categories = Array.isArray(data.categories)
     ? data.categories
@@ -106,9 +102,7 @@ function generateVideoNfo(data) {
     ? data.tags
     : [];
 
-  const genres = [...new Set(categories)];
-
-  const genreXml = genres
+  const genreXml = [...new Set(categories)]
     .map(genre => `  <genre>${escapeXml(genre)}</genre>`)
     .join("\n");
 
@@ -116,32 +110,24 @@ function generateVideoNfo(data) {
     .map(tag => `  <tag>${escapeXml(tag)}</tag>`)
     .join("\n");
 
-  const uniqueId = escapeXml(data.id || "");
-  const title = escapeXml(data.title || "Unknown Title");
-  const plot = escapeXml(data.description || "");
-  const studio = escapeXml(
-    data.channel || data.uploader || "Unknown Channel"
-  );
-
   const runtime = Number.isFinite(Number(data.duration))
     ? Math.floor(Number(data.duration) / 60)
     : null;
 
-  const runtimeXml = runtime !== null
-    ? `  <runtime>${runtime}</runtime>`
-    : "";
+  const runtimeXml =
+    runtime !== null ? `  <runtime>${runtime}</runtime>` : "";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <movie>
-  <title>${title}</title>
-  <plot>${plot}</plot>
-  <studio>${studio}</studio>
+  <title>${escapeXml(data.title || "Unknown Title")}</title>
+  <plot>${escapeXml(data.description || "")}</plot>
+  <studio>${escapeXml(data.channel || data.uploader || "Unknown Channel")}</studio>
   <premiered>${uploadDate}</premiered>
   <dateadded>${new Date().toISOString()}</dateadded>
   <aired>${uploadDate}</aired>
   <year>${year}</year>
 ${runtimeXml}
-  <uniqueid type="youtube">${uniqueId}</uniqueid>
+  <uniqueid type="youtube">${escapeXml(data.id || "")}</uniqueid>
 ${genreXml}
 ${tagXml}
 </movie>`;
@@ -164,6 +150,10 @@ function generateChannelNfo(data) {
 </tvshow>`;
 }
 
+// ============================================================
+// MEDIA PATH HELPERS
+// ============================================================
+
 function resolveMediaPath(relativePath) {
   if (
     typeof relativePath !== "string" ||
@@ -180,9 +170,7 @@ function resolveMediaPath(relativePath) {
     relative.startsWith(`..${path.sep}`) ||
     path.isAbsolute(relative)
   ) {
-    throw new Error(
-      `Refusing path outside MEDIA_ROOT: ${relativePath}`
-    );
+    throw new Error(`Refusing path outside MEDIA_ROOT: ${relativePath}`);
   }
 
   return resolved;
@@ -199,6 +187,10 @@ function isUsableMediaPath(mediaPath) {
     return false;
   }
 }
+
+// ============================================================
+// YT-DLP HELPERS
+// ============================================================
 
 function buildYtDlpFlags() {
   return [
@@ -235,13 +227,7 @@ function runYtDlp(url, outputBase, extraFlags = []) {
 }
 
 function findExistingThumbnail(folderPath, id) {
-  const candidates = [
-    `${id}.jpg`,
-    `${id}.jpeg`,
-    `${id}.png`
-  ];
-
-  for (const filename of candidates) {
+  for (const filename of [`${id}.jpg`, `${id}.jpeg`, `${id}.png`]) {
     const candidate = path.join(folderPath, filename);
 
     if (fs.existsSync(candidate)) {
@@ -253,13 +239,11 @@ function findExistingThumbnail(folderPath, id) {
 }
 
 // ============================================================
-// THUMBNAILS
+// THUMBNAIL PROCESSING
 // ============================================================
 
 async function convertThumbnail(sourcePath, destinationPath) {
-  if (!fs.existsSync(sourcePath)) {
-    return false;
-  }
+  if (!fs.existsSync(sourcePath)) return false;
 
   await sharp(sourcePath)
     .jpeg({ quality: 90 })
@@ -272,29 +256,20 @@ async function ensureVideoThumbnail(folderPath, videoId) {
   const webpPath = path.join(folderPath, `${videoId}.webp`);
   const jpgPath = path.join(folderPath, `${videoId}.jpg`);
 
-  if (fs.existsSync(jpgPath)) {
-    return "completed";
-  }
+  if (fs.existsSync(jpgPath)) return "completed";
 
-  const otherThumbnail = findExistingThumbnail(
-    folderPath,
-    videoId
-  );
+  const otherThumbnail = findExistingThumbnail(folderPath, videoId);
 
   if (otherThumbnail) {
     if (otherThumbnail !== jpgPath) {
       try {
         await convertThumbnail(otherThumbnail, jpgPath);
       } catch (error) {
-        log(
-          `⚠️ Thumbnail conversion failed for ${videoId}: ${error.message}`
-        );
+        log(`⚠️ Thumbnail conversion failed for ${videoId}: ${error.message}`);
       }
     }
 
-    if (fs.existsSync(jpgPath)) {
-      return "completed";
-    }
+    if (fs.existsSync(jpgPath)) return "completed";
   }
 
   if (fs.existsSync(webpPath)) {
@@ -309,38 +284,50 @@ async function ensureChannelThumbnail(folderPath, channelId) {
   const webpPath = path.join(folderPath, `${channelId}.webp`);
   const jpgPath = path.join(folderPath, "folder.jpg");
 
-  if (fs.existsSync(jpgPath)) {
-    return;
-  }
+  if (fs.existsSync(jpgPath)) return;
 
   if (fs.existsSync(webpPath)) {
     try {
       await convertThumbnail(webpPath, jpgPath);
       log(`🖼️ Created channel thumbnail: ${channelId}`);
     } catch (error) {
-      log(
-        `⚠️ Channel thumbnail conversion failed for ${channelId}: ${error.message}`
-      );
+      log(`⚠️ Channel thumbnail conversion failed for ${channelId}: ${error.message}`);
     }
   }
 }
-
 // ============================================================
 // CHANNEL METADATA
 // ============================================================
 
 async function processChannel(folderPath, channelId) {
-  const channelJson = path.join(
-    folderPath,
-    `${channelId}.info.json`
-  );
+  const channelJson = path.join(folderPath, `${channelId}.info.json`);
+  const channelNfo = path.join(folderPath, "tvshow.nfo");
 
-  const channelNfo = path.join(
-    folderPath,
-    "tvshow.nfo"
-  );
+  // In regeneration mode, use local channel JSON only.
+  if (REGENERATE_NFO) {
+    if (fs.existsSync(channelJson)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(channelJson, "utf8"));
 
-  // Do not request channel metadata when the local JSON exists.
+        fs.writeFileSync(
+          channelNfo,
+          generateChannelNfo(data),
+          "utf8"
+        );
+
+        log(`🔄 Regenerated channel NFO: ${channelId}`);
+      } catch (error) {
+        log(`⚠️ Channel NFO regeneration failed for ${channelId}: ${error.message}`);
+      }
+    } else {
+      log(`⏭️ Skipping channel NFO regeneration; local JSON missing: ${channelId}`);
+    }
+
+    await ensureChannelThumbnail(folderPath, channelId);
+    return;
+  }
+
+  // Normal mode: fetch channel metadata only if JSON is missing.
   if (!fs.existsSync(channelJson)) {
     try {
       log(`📥 Fetching missing channel metadata: ${channelId}`);
@@ -353,20 +340,13 @@ async function processChannel(folderPath, channelId) {
 
       sleepMs(300);
     } catch (error) {
-      log(
-        `⚠️ Channel metadata request failed for ${channelId}: ${error.message}`
-      );
+      log(`⚠️ Channel metadata request failed for ${channelId}: ${error.message}`);
     }
   }
 
-  if (
-    !fs.existsSync(channelNfo) &&
-    fs.existsSync(channelJson)
-  ) {
+  if (!fs.existsSync(channelNfo) && fs.existsSync(channelJson)) {
     try {
-      const data = JSON.parse(
-        fs.readFileSync(channelJson, "utf8")
-      );
+      const data = JSON.parse(fs.readFileSync(channelJson, "utf8"));
 
       fs.writeFileSync(
         channelNfo,
@@ -376,9 +356,7 @@ async function processChannel(folderPath, channelId) {
 
       log(`✅ Created channel NFO: ${channelId}`);
     } catch (error) {
-      log(
-        `⚠️ Channel NFO failed for ${channelId}: ${error.message}`
-      );
+      log(`⚠️ Channel NFO failed for ${channelId}: ${error.message}`);
     }
   }
 
@@ -396,23 +374,59 @@ async function processVideo(filePath) {
 
   const jsonPath = `${base}.info.json`;
   const nfoPath = `${base}.nfo`;
-  const webpPath = `${base}.webp`;
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`Video file not found: ${filePath}`);
+  }
+
+  // Regeneration mode never runs yt-dlp.
+  // It only rebuilds NFO files from existing local JSON.
+  if (REGENERATE_NFO) {
+    if (!fs.existsSync(jsonPath)) {
+      throw new Error(
+        `Cannot regenerate NFO; local metadata JSON is missing: ${jsonPath}`
+      );
+    }
+
+    const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+
+    fs.writeFileSync(
+      nfoPath,
+      generateVideoNfo(data),
+      "utf8"
+    );
+
+    log(`🔄 Regenerated video NFO: ${videoId}`);
+
+    let thumbnailStatus = "missing";
+
+    try {
+      thumbnailStatus = await ensureVideoThumbnail(folderPath, videoId);
+    } catch (error) {
+      log(`⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`);
+      thumbnailStatus = "pending";
+    }
+
+    if (REQUIRE_THUMBNAIL && thumbnailStatus !== "completed") {
+      throw new Error(`Required thumbnail is not available for ${videoId}`);
+    }
+
+    return {
+      nfoExists: fs.existsSync(nfoPath),
+      jsonExists: fs.existsSync(jsonPath),
+      thumbnailStatus
+    };
   }
 
   const needsJson = !fs.existsSync(jsonPath);
 
   const needsThumbnail =
     !findExistingThumbnail(folderPath, videoId) &&
-    !fs.existsSync(webpPath);
+    !fs.existsSync(`${base}.webp`);
 
-  // Re-fetch only when JSON or thumbnail data is missing.
+  // Normal mode: fetch only if local JSON or thumbnail data is missing.
   if (needsJson || needsThumbnail) {
-    log(
-      `📥 Fetching video metadata/thumbnail for ${videoId}`
-    );
+    log(`📥 Fetching video metadata/thumbnail for ${videoId}`);
 
     runYtDlp(
       `https://www.youtube.com/watch?v=${videoId}`,
@@ -423,15 +437,11 @@ async function processVideo(filePath) {
   }
 
   if (!fs.existsSync(jsonPath)) {
-    throw new Error(
-      `Metadata JSON is unavailable: ${jsonPath}`
-    );
+    throw new Error(`Metadata JSON is unavailable: ${jsonPath}`);
   }
 
   if (!fs.existsSync(nfoPath)) {
-    const data = JSON.parse(
-      fs.readFileSync(jsonPath, "utf8")
-    );
+    const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
 
     fs.writeFileSync(
       nfoPath,
@@ -445,25 +455,14 @@ async function processVideo(filePath) {
   let thumbnailStatus;
 
   try {
-    thumbnailStatus = await ensureVideoThumbnail(
-      folderPath,
-      videoId
-    );
+    thumbnailStatus = await ensureVideoThumbnail(folderPath, videoId);
   } catch (error) {
-    log(
-      `⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`
-    );
-
+    log(`⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`);
     thumbnailStatus = "pending";
   }
 
-  if (
-    REQUIRE_THUMBNAIL &&
-    thumbnailStatus !== "completed"
-  ) {
-    throw new Error(
-      `Required thumbnail is not available for ${videoId}`
-    );
+  if (REQUIRE_THUMBNAIL && thumbnailStatus !== "completed") {
+    throw new Error(`Required thumbnail is not available for ${videoId}`);
   }
 
   return {
@@ -508,16 +507,11 @@ async function markPending(jobs, record, reason) {
 // ============================================================
 
 // Existing library items are registered as baseline_ignored.
-// They are not NFO-processed just because the generator is new.
-// Existing records with missing media are queued for retry.
-//
-// The maximum _id is captured first so records inserted while
-// initialization runs are not accidentally treated as baseline.
+// Items with missing media are queued for retry.
+// The source collection remains read-only.
 
 async function initializeBaseline(db, source, jobs, state) {
-  let baselineState = await state.findOne({
-    _id: STATE_ID
-  });
+  let baselineState = await state.findOne({ _id: STATE_ID });
 
   if (!baselineState) {
     const newest = await source.findOne(
@@ -533,8 +527,7 @@ async function initializeBaseline(db, source, jobs, state) {
       status: "initializing",
       baselineMaxId: newest?._id ?? null,
       initializedAt: new Date(),
-      note:
-        "Existing library registered without generating NFOs"
+      note: "Existing library registered without generating NFOs"
     };
 
     await state.updateOne(
@@ -543,9 +536,7 @@ async function initializeBaseline(db, source, jobs, state) {
       { upsert: true }
     );
 
-    baselineState = await state.findOne({
-      _id: STATE_ID
-    });
+    baselineState = await state.findOne({ _id: STATE_ID });
   }
 
   if (baselineState.status === "initialized") {
@@ -572,27 +563,20 @@ async function initializeBaseline(db, source, jobs, state) {
     for await (const record of cursor) {
       const youtubeId = record.youtubeId;
 
-      // Preserve jobs that already exist; do not overwrite them.
       const existingJob = await jobs.findOne(
         { youtubeId },
         { projection: { _id: 1 } }
       );
 
-      if (existingJob) {
-        continue;
-      }
+      if (existingJob) continue;
 
-      const mediaExists = isUsableMediaPath(
-        record.mediaPath
-      );
+      const mediaExists = isUsableMediaPath(record.mediaPath);
 
       const baselineJob = {
         youtubeId,
         baselineMediaPath: record.mediaPath || null,
         mediaPath: record.mediaPath || null,
-        status: mediaExists
-          ? "baseline_ignored"
-          : "pending",
+        status: mediaExists ? "baseline_ignored" : "pending",
         lastError: mediaExists
           ? null
           : "Media path/file unavailable during baseline",
@@ -602,23 +586,16 @@ async function initializeBaseline(db, source, jobs, state) {
       };
 
       await jobs.insertOne(baselineJob);
-
       registered++;
 
-      if (!mediaExists) {
-        pending++;
-      }
+      if (!mediaExists) pending++;
 
       if (registered % 500 === 0) {
-        log(
-          `🧭 Baseline progress: ${registered} records registered.`
-        );
+        log(`🧭 Baseline progress: ${registered} records registered.`);
       }
     }
 
-    log(
-      `🧭 Baseline registered: ${registered}; queued for retry: ${pending}.`
-    );
+    log(`🧭 Baseline registered: ${registered}; queued for retry: ${pending}.`);
   }
 
   await state.updateOne(
@@ -632,23 +609,25 @@ async function initializeBaseline(db, source, jobs, state) {
     }
   );
 
-  log(
-    "✅ Baseline completed. Existing media will not be backfilled automatically."
-  );
-
-  log(
-    "ℹ️ Start the next scheduled run to process new records and retry queued records."
-  );
+  log("✅ Baseline completed.");
+  log("ℹ️ Existing baseline items will not be backfilled automatically.");
 
   return false;
 }
-
 // ============================================================
 // RECORD RECONCILIATION
 // ============================================================
 
 function shouldProcessRecord(record, job, videoPath) {
-  // New source record: no generator job exists.
+  // Regeneration mode: process all records with an available media file.
+  if (REGENERATE_NFO) {
+    return {
+      process: true,
+      reason: "NFO regeneration mode"
+    };
+  }
+
+  // New source record.
   if (!job) {
     return {
       process: true,
@@ -656,7 +635,7 @@ function shouldProcessRecord(record, job, videoPath) {
     };
   }
 
-  // Persistent retry queue.
+  // Retry pending, failed, and interrupted jobs.
   if (JOB_STATUSES_TO_RETRY.includes(job.status)) {
     return {
       process: true,
@@ -666,7 +645,7 @@ function shouldProcessRecord(record, job, videoPath) {
 
   const currentPath = record.mediaPath || null;
 
-  // Detect source mediaPath changes.
+  // Detect source mediaPath changes for baseline records.
   if (
     job.status === "baseline_ignored" &&
     currentPath !== (job.baselineMediaPath || null)
@@ -677,7 +656,7 @@ function shouldProcessRecord(record, job, videoPath) {
     };
   }
 
-  // Requeue baseline items whose media file is no longer present.
+  // Requeue baseline records if their media file is missing.
   if (
     job.status === "baseline_ignored" &&
     (!videoPath || !fs.existsSync(videoPath))
@@ -688,7 +667,7 @@ function shouldProcessRecord(record, job, videoPath) {
     };
   }
 
-  // For completed items, re-check generated files.
+  // Verify files for completed records.
   if (job.status === "completed") {
     if (!videoPath || !fs.existsSync(videoPath)) {
       return {
@@ -725,8 +704,7 @@ function shouldProcessRecord(record, job, videoPath) {
     };
   }
 
-  // Existing baseline records are intentionally excluded while
-  // their media path and file remain unchanged.
+  // Leave unchanged baseline records alone during normal operation.
   if (job.status === "baseline_ignored") {
     return {
       process: false,
@@ -734,7 +712,6 @@ function shouldProcessRecord(record, job, videoPath) {
     };
   }
 
-  // Unknown status: process conservatively.
   return {
     process: true,
     reason: `unrecognized job status: ${job.status}`
@@ -776,33 +753,29 @@ async function main() {
     log(`📖 Source collection (read-only): ${SOURCE_COLLECTION}`);
     log(`📝 Tracking collection: ${TRACKING_COLLECTION}`);
     log(`🧭 State collection: ${STATE_COLLECTION}`);
+    log(`🔄 Regenerate NFO: ${REGENERATE_NFO}`);
 
     if (!fs.existsSync(MEDIA_ROOT)) {
-      throw new Error(
-        `MEDIA_ROOT does not exist: ${MEDIA_ROOT}`
+      throw new Error(`MEDIA_ROOT does not exist: ${MEDIA_ROOT}`);
+    }
+
+    // In regeneration mode, bypass baseline initialization.
+    // This permits existing library records to be regenerated.
+    if (!REGENERATE_NFO) {
+      const baselineReady = await initializeBaseline(
+        db,
+        source,
+        jobs,
+        state
       );
+
+      if (!baselineReady) {
+        return;
+      }
     }
 
-    // First run or interrupted baseline initialization.
-    const baselineReady = await initializeBaseline(
-      db,
-      source,
-      jobs,
-      state
-    );
-
-    if (!baselineReady) {
-      return;
-    }
-
-    // --------------------------------------------------------
-    // RECONCILE THE WHOLE SOURCE COLLECTION
-    //
-    // This deliberately does not depend on dateDownloaded or
-    // _id ordering. It catches delayed inserts with old dates.
-    // Completed jobs are skipped after checking required files.
-    // --------------------------------------------------------
-
+    // Reconcile the entire source collection.
+    // No dateDownloaded filter is used.
     const pipeline = [
       {
         $match: {
@@ -838,15 +811,15 @@ async function main() {
         try {
           videoPath = resolveMediaPath(record.mediaPath);
         } catch (error) {
-          log(
-            `⚠️ Invalid media path for ${youtubeId}: ${error.message}`
-          );
+          log(`⚠️ Invalid media path for ${youtubeId}: ${error.message}`);
 
-          await markPending(
-            jobs,
-            record,
-            `Invalid mediaPath: ${error.message}`
-          );
+          if (!REGENERATE_NFO) {
+            await markPending(
+              jobs,
+              record,
+              `Invalid mediaPath: ${error.message}`
+            );
+          }
 
           pending++;
           continue;
@@ -865,59 +838,54 @@ async function main() {
       }
 
       if (!videoPath || !fs.existsSync(videoPath)) {
-        await markPending(
-          jobs,
-          record,
-          "Media file/path not available; will retry"
-        );
+        if (!REGENERATE_NFO) {
+          await markPending(
+            jobs,
+            record,
+            "Media file/path not available; will retry"
+          );
+        }
 
-        log(
-          `⏳ Queued ${youtubeId}: media file/path not available.`
-        );
-
+        log(`⏳ Skipping ${youtubeId}: media file/path unavailable.`);
         pending++;
         continue;
       }
 
       const folderPath = path.dirname(videoPath);
       const channelId = path.basename(folderPath);
-      const nfoPath = path.join(
-        folderPath,
-        `${youtubeId}.nfo`
-      );
+      const nfoPath = path.join(folderPath, `${youtubeId}.nfo`);
 
       try {
-        await updateJob(jobs, youtubeId, {
-          mediaPath: record.mediaPath,
-          nfoPath: path.relative(MEDIA_ROOT, nfoPath),
-          status: "processing",
-          lastError: null,
-          startedAt: new Date(),
-          sourceDateDownloaded: record.dateDownloaded ?? null
-        });
+        if (!REGENERATE_NFO) {
+          await updateJob(jobs, youtubeId, {
+            mediaPath: record.mediaPath,
+            nfoPath: path.relative(MEDIA_ROOT, nfoPath),
+            status: "processing",
+            lastError: null,
+            startedAt: new Date(),
+            sourceDateDownloaded: record.dateDownloaded ?? null
+          });
+        }
 
-        log(
-          `🎬 Processing ${youtubeId} (${decision.reason})`
-        );
+        log(`🎬 Processing ${youtubeId} (${decision.reason})`);
 
-        // A channel is processed at most once during this run.
         if (!processedChannels.has(channelId)) {
           processedChannels.add(channelId);
 
-          await processChannel(
-            folderPath,
-            channelId
-          );
-
+          await processChannel(folderPath, channelId);
           channelsChecked++;
         }
 
         const result = await processVideo(videoPath);
 
         if (!result.nfoExists) {
-          throw new Error(
-            "NFO was not created successfully."
-          );
+          throw new Error("NFO was not created successfully.");
+        }
+
+        if (REGENERATE_NFO) {
+          processed++;
+          log(`✅ Regenerated ${youtubeId}`);
+          continue;
         }
 
         const completed =
@@ -948,9 +916,7 @@ async function main() {
           lastError: completed
             ? null
             : "Thumbnail is still missing",
-          completedAt: completed
-            ? new Date()
-            : null
+          completedAt: completed ? new Date() : null
         });
 
         if (completed) {
@@ -958,43 +924,49 @@ async function main() {
           log(`✅ Completed ${youtubeId}`);
         } else {
           pending++;
-          log(
-            `⏳ ${youtubeId}: NFO complete; thumbnail pending.`
-          );
+          log(`⏳ ${youtubeId}: NFO complete; thumbnail pending.`);
         }
       } catch (error) {
         failed++;
 
-        log(
-          `❌ Failed ${youtubeId}: ${error.message}`
-        );
+        log(`❌ Failed ${youtubeId}: ${error.message}`);
 
-        await updateJob(jobs, youtubeId, {
-          mediaPath: record.mediaPath || null,
-          status: "failed",
-          lastError: error.message,
-          failedAt: new Date()
-        });
+        // Regeneration mode does not alter job tracking.
+        if (!REGENERATE_NFO) {
+          await updateJob(jobs, youtubeId, {
+            mediaPath: record.mediaPath || null,
+            status: "failed",
+            lastError: error.message,
+            failedAt: new Date()
+          });
+        }
       }
     }
 
-    await state.updateOne(
-      { _id: STATE_ID },
-      {
-        $set: {
-          lastScanAt: new Date(),
-          lastScanStatus: "completed",
-          updatedAt: new Date()
+    // Only normal operation updates scan state.
+    if (!REGENERATE_NFO) {
+      await state.updateOne(
+        { _id: STATE_ID },
+        {
+          $set: {
+            lastScanAt: new Date(),
+            lastScanStatus: "completed",
+            updatedAt: new Date()
+          }
         }
-      }
-    );
+      );
+    }
 
     log("========================================");
-    log("🎉 Reconciliation finished.");
-    log(`✅ Completed this run: ${processed}`);
+    log(
+      REGENERATE_NFO
+        ? "🎉 NFO regeneration finished."
+        : "🎉 Reconciliation finished."
+    );
+    log(`✅ Processed this run: ${processed}`);
     log(`⏭️ Skipped: ${skipped}`);
-    log(`⏳ Pending/retry: ${pending}`);
-    log(`❌ Failed this run: ${failed}`);
+    log(`⏳ Pending: ${pending}`);
+    log(`❌ Failed: ${failed}`);
     log(`📺 Channels checked: ${channelsChecked}`);
     log("========================================");
   } finally {
