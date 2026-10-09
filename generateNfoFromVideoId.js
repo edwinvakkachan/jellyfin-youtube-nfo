@@ -4,7 +4,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const sharp = require("sharp");
 const { MongoClient } = require("mongodb");
-import { updateChannelDateAdded } from "./updateChannelDateAdded";
+import { updateChannelDateAdded } from "./updateChannelDateAdded.js";
 // ============================================================
 // CONFIGURATION
 // ============================================================
