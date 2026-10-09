@@ -85,10 +85,11 @@ function toUploadDate(value) {
     : "";
 }
 
+
 function generateVideoNfo(data) {
   const uploadDate = data.upload_date
     ? data.upload_date.replace(
-        /(\d{4})(\d{2})(\d{2})/,
+        /^(\d{4})(\d{2})(\d{2})$/,
         "$1-$2-$3"
       )
     : "";
@@ -97,7 +98,7 @@ function generateVideoNfo(data) {
     ? uploadDate.slice(0, 4)
     : "";
 
-  const genres = Array.isArray(data.categories)
+  const categories = Array.isArray(data.categories)
     ? data.categories
     : [];
 
@@ -105,26 +106,42 @@ function generateVideoNfo(data) {
     ? data.tags
     : [];
 
+  const genres = [...new Set(categories)];
+
   const genreXml = genres
     .map(genre => `  <genre>${escapeXml(genre)}</genre>`)
     .join("\n");
 
-  const tagXml = tags
+  const tagXml = [...new Set(tags)]
     .map(tag => `  <tag>${escapeXml(tag)}</tag>`)
     .join("\n");
 
+  const uniqueId = escapeXml(data.id || "");
+  const title = escapeXml(data.title || "Unknown Title");
+  const plot = escapeXml(data.description || "");
+  const studio = escapeXml(
+    data.channel || data.uploader || "Unknown Channel"
+  );
+
+  const runtime = Number.isFinite(Number(data.duration))
+    ? Math.floor(Number(data.duration) / 60)
+    : null;
+
+  const runtimeXml = runtime !== null
+    ? `  <runtime>${runtime}</runtime>`
+    : "";
+
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <movie>
-  <title>${escapeXml(data.title || "Unknown Title")}</title>
-  <plot>${escapeXml(data.description || "")}</plot>
-  <studio>${escapeXml(
-    data.channel || data.uploader || "Unknown Channel"
-  )}</studio>
+  <title>${title}</title>
+  <plot>${plot}</plot>
+  <studio>${studio}</studio>
   <premiered>${uploadDate}</premiered>
   <dateadded>${new Date().toISOString()}</dateadded>
   <aired>${uploadDate}</aired>
   <year>${year}</year>
-  <uniqueid type="youtube">${escapeXml(data.id || "")}</uniqueid>
+${runtimeXml}
+  <uniqueid type="youtube">${uniqueId}</uniqueid>
 ${genreXml}
 ${tagXml}
 </movie>`;
