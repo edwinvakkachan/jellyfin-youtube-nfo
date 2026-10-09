@@ -1,12 +1,12 @@
 
+
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import sharp from "sharp";
+import { MongoClient } from "mongodb";
 import { updateChannelDateAdded } from "./updateChannelDateAdded.js";
 
-
-const fs = require("fs");
-const path = require("path");
-const { execFileSync } = require("child_process");
-const sharp = require("sharp");
-const { MongoClient } = require("mongodb");
 // ============================================================
 // CONFIGURATION
 // ============================================================
