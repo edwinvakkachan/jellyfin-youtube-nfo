@@ -52,9 +52,9 @@ function jitter(min, max) {
 
 function sleepMs(ms) {
     const sab = new SharedArrayBuffer(4);
-    Atomics.wait(sab, 0, 0, ms);
+    const ia = new Int32Array(sab);
+    Atomics.wait(ia, 0, 0, ms);
 }
-
 function buildSafeFlags() {
     return [
         "--skip-download",
