@@ -825,32 +825,40 @@ async function main() {
         }
       }
 
-      const decision = shouldProcessRecord(
-        record,
-        job,
-        videoPath
-      );
 
-      if (!decision.process) {
-        skipped++;
-        continue;
-      }
+const isNewVideo = !job;
 
-      if (!videoPath || !fs.existsSync(videoPath)) {
-        if (!REGENERATE_NFO) {
-          await markPending(
-            jobs,
-            record,
-            "Media file/path not available; will retry"
-          );
-        }
+const decision = shouldProcessRecord(
+  record,
+  job,
+  videoPath
+);
 
-        log(`⏳ Skipping ${youtubeId}: media file/path unavailable.`);
-        pending++;
-        continue;
-      }
+if (!decision.process) {
+  skipped++;
+  continue;
+}
 
-      const folderPath = path.dirname(videoPath);
+if (!videoPath || !fs.existsSync(videoPath)) {
+  // Keep your existing pending/retry handling here.
+  await markPending(
+    jobs,
+    record,
+    "Media file/path not available; will retry"
+  );
+
+  pending++;
+  continue;
+}
+
+const folderPath = path.dirname(videoPath);
+
+if (isNewVideo) {
+  updateChannelDateAdded(folderPath);
+}
+
+
+
       const channelId = path.basename(folderPath);
       const nfoPath = path.join(folderPath, `${youtubeId}.nfo`);
 
