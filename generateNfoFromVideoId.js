@@ -1,9 +1,10 @@
+
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const sharp = require("sharp");
 const { MongoClient } = require("mongodb");
-
+import { updateChannelDateAdded } from "./updateChannelDateAdded";
 // ============================================================
 // CONFIGURATION
 // ============================================================
@@ -854,7 +855,7 @@ if (!videoPath || !fs.existsSync(videoPath)) {
 const folderPath = path.dirname(videoPath);
 
 if (isNewVideo) {
-  updateChannelDateAdded(folderPath);
+  await updateChannelDateAdded(folderPath);
 }
 
 

@@ -1,4 +1,4 @@
-function updateChannelDateAdded(folderPath) {
+export async function updateChannelDateAdded(folderPath) {
   const channelNfo = path.join(folderPath, "tvshow.nfo");
 
   if (!fs.existsSync(channelNfo)) {
