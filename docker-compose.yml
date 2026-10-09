@@ -5,7 +5,7 @@ services:
     build: .
     container_name: youtubedatafetch
     volumes:
-      - ${MEDIA_HOST_PATH}:/app/media
+      - ${MEDIA_HOST_PATH}:/media
 
     environment:
       MONGODB_URI: ${MONGODB_URI}
