@@ -375,7 +375,7 @@ async function processChannel(folderPath, channelId) {
     }
   }
 
-  if (!fs.existsSync(channelNfo) && fs.existsSync(channelJson)) {
+  if (fs.existsSync(channelJson)) {
     try {
       const data = JSON.parse(fs.readFileSync(channelJson, "utf8"));
 
@@ -471,7 +471,7 @@ async function processVideo(filePath) {
     throw new Error(`Metadata JSON is unavailable: ${jsonPath}`);
   }
 
-  if (!fs.existsSync(nfoPath)) {
+  if (fs.existsSync(jsonPath)) {
     const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
 
     fs.writeFileSync(
