@@ -93,9 +93,15 @@ function toUploadDate(value) {
 // VIDEO NFO GENERATION
 // ============================================================
 
+
 function generateVideoNfo(data) {
+  const videoId = data.id || data.youtubeId || "";
+
   const uploadDate = toUploadDate(data.upload_date);
   const year = uploadDate ? uploadDate.slice(0, 4) : "";
+
+  const description = data.description || "";
+  const channel = data.channel || data.uploader || "Unknown Channel";
 
   const categories = Array.isArray(data.categories)
     ? data.categories
@@ -113,27 +119,48 @@ function generateVideoNfo(data) {
     .map(tag => `  <tag>${escapeXml(tag)}</tag>`)
     .join("\n");
 
-  const runtime = Number.isFinite(Number(data.duration))
-    ? Math.floor(Number(data.duration) / 60)
-    : null;
-
+  const runtimeSeconds = Number(data.duration);
   const runtimeXml =
-    runtime !== null ? `  <runtime>${runtime}</runtime>` : "";
+    Number.isFinite(runtimeSeconds) && runtimeSeconds > 0
+      ? `  <runtime>${Math.floor(runtimeSeconds / 60)}</runtime>`
+      : "";
 
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+  // Use the current timestamp if no download timestamp is available.
+const rawDateAdded =
+  data.dateadded ?? data.downloadedAt ?? data.dateDownloaded;
+
+const dateAdded = rawDateAdded
+  ? new Date(
+      typeof rawDateAdded === "number" ||
+      /^\d+$/.test(String(rawDateAdded))
+        ? Number(rawDateAdded) * 1000
+        : rawDateAdded
+    )
+  : new Date();
+  const dateAddedXml = !Number.isNaN(dateAdded.getTime())
+    ? `  <dateadded>${dateAdded.toISOString()}</dateadded>`
+    : `  <dateadded>${new Date().toISOString()}</dateadded>`;
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <movie>
-  <title>${escapeXml(data.title || "Unknown Title")}</title>
-  <plot>${escapeXml(data.description || "")}</plot>
-  <studio>${escapeXml(data.channel || data.uploader || "Unknown Channel")}</studio>
+  <title>${escapeXml(videoId)}</title>
+  <originaltitle>${escapeXml(data.title || videoId)}</originaltitle>
+  <sorttitle>${escapeXml(videoId)}</sorttitle>
+  <plot>${escapeXml(description)}</plot>
+  <outline>${escapeXml(description)}</outline>
+  <studio>${escapeXml(channel)}</studio>
   <premiered>${uploadDate}</premiered>
   <aired>${uploadDate}</aired>
+${dateAddedXml}
   <year>${year}</year>
 ${runtimeXml}
-  <uniqueid type="youtube">${escapeXml(data.id || "")}</uniqueid>
+  <uniqueid type="youtube" default="true">${escapeXml(videoId)}</uniqueid>
 ${genreXml}
 ${tagXml}
+  <lockdata>false</lockdata>
 </movie>`;
 }
+
 
 function generateChannelNfo(data) {
   const uploadDate = toUploadDate(data.upload_date);
