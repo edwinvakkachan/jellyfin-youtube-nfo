@@ -143,7 +143,7 @@ const dateAdded = rawDateAdded
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <movie>
-  <title>${escapeXml(videoId)}</title>
+  <title>${escapeXml(data.title || videoId)}</title>
   <originaltitle>${escapeXml(data.title || videoId)}</originaltitle>
   <sorttitle>${escapeXml(videoId)}</sorttitle>
   <plot>${escapeXml(description)}</plot>
