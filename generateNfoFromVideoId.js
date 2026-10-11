@@ -6,6 +6,8 @@ import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import { MongoClient } from "mongodb";
 import { updateChannelDateAdded } from "./updateChannelDateAdded.js";
+import {getExistingDateAdded} from "./getExistingDateAdded.js"
+
 
 // ============================================================
 // CONFIGURATION
@@ -105,7 +107,7 @@ function needsMetadataRefresh(data, videoId) {
 
 
 
-function generateVideoNfo(data) {
+function generateVideoNfo(data, existingDateAdded = "") {
   const videoId = data.id || data.youtubeId || "";
   const title = data.title || videoId;
 
@@ -134,19 +136,21 @@ function generateVideoNfo(data) {
       ? `  <runtime>${Math.floor(seconds / 60)}</runtime>`
       : "";
 
-  const rawDateAdded =
-    data.dateadded ?? data.downloadedAt ?? data.dateDownloaded;
+const rawDateAdded =
+  data.dateadded ?? data.downloadedAt ?? data.dateDownloaded;
 
-  const date = rawDateAdded
-    ? new Date(
-        typeof rawDateAdded === "number" ||
-        /^\d+$/.test(String(rawDateAdded))
-          ? Number(rawDateAdded) * 1000
-          : rawDateAdded
-      )
-    : new Date();
+const date = rawDateAdded
+  ? new Date(
+      typeof rawDateAdded === "number" ||
+      /^\d+$/.test(String(rawDateAdded))
+        ? Number(rawDateAdded) * 1000
+        : rawDateAdded
+    )
+  : new Date();
 
-  const dateAdded = !Number.isNaN(date.getTime())
+const dateAdded = existingDateAdded
+  ? existingDateAdded
+  : !Number.isNaN(date.getTime())
     ? date.toISOString()
     : new Date().toISOString();
 
@@ -435,11 +439,13 @@ async function processVideo(filePath) {
 
     const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
 
-    fs.writeFileSync(
-      nfoPath,
-      generateVideoNfo(data),
-      "utf8"
-    );
+const existingDateAdded = getExistingDateAdded(nfoPath);
+
+fs.writeFileSync(
+  nfoPath,
+  generateVideoNfo(data, existingDateAdded),
+  "utf8"
+);
 
     log(`🔄 Regenerated video NFO: ${videoId}`);
 
@@ -591,11 +597,13 @@ async function processVideo(filePath) {
   }
 
   if (regenerateNfo || needsMetadata) {
-    fs.writeFileSync(
-      nfoPath,
-      generateVideoNfo(data),
-      "utf8"
-    );
+const existingDateAdded = getExistingDateAdded(nfoPath);
+
+fs.writeFileSync(
+  nfoPath,
+  generateVideoNfo(data, existingDateAdded),
+  "utf8"
+);
 
     log(
       `✅ ${regenerateNfo ? "Created/repaired" : "Updated"} video NFO: ${videoId}`
