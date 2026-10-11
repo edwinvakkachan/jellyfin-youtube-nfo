@@ -89,6 +89,16 @@ function toUploadDate(value) {
     : "";
 }
 
+function needsMetadataRefresh(data, videoId) {
+  const title = String(data?.title || "").trim();
+
+  return (
+    !title ||
+    title === videoId ||
+    title === videoId + ".mp4"
+  );
+}
+
 // ============================================================
 // VIDEO NFO GENERATION
 // ============================================================
@@ -398,6 +408,7 @@ async function processChannel(folderPath, channelId) {
 // VIDEO PROCESSING
 // ============================================================
 
+
 async function processVideo(filePath) {
   const videoId = path.parse(filePath).name;
   const folderPath = path.dirname(filePath);
@@ -410,8 +421,11 @@ async function processVideo(filePath) {
     throw new Error(`Video file not found: ${filePath}`);
   }
 
-  // Regeneration mode never runs yt-dlp.
-  // It only rebuilds NFO files from existing local JSON.
+  // ============================================================
+  // REGENERATION MODE
+  // Rebuild NFO from existing local JSON.
+  // ============================================================
+
   if (REGENERATE_NFO) {
     if (!fs.existsSync(jsonPath)) {
       throw new Error(
@@ -432,14 +446,24 @@ async function processVideo(filePath) {
     let thumbnailStatus = "missing";
 
     try {
-      thumbnailStatus = await ensureVideoThumbnail(folderPath, videoId);
+      thumbnailStatus = await ensureVideoThumbnail(
+        folderPath,
+        videoId
+      );
     } catch (error) {
-      log(`⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`);
+      log(
+        `⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`
+      );
       thumbnailStatus = "pending";
     }
 
-    if (REQUIRE_THUMBNAIL && thumbnailStatus !== "completed") {
-      throw new Error(`Required thumbnail is not available for ${videoId}`);
+    if (
+      REQUIRE_THUMBNAIL &&
+      thumbnailStatus !== "completed"
+    ) {
+      throw new Error(
+        `Required thumbnail is not available for ${videoId}`
+      );
     }
 
     return {
@@ -449,51 +473,163 @@ async function processVideo(filePath) {
     };
   }
 
-  const needsJson = !fs.existsSync(jsonPath);
+  // ============================================================
+  // NORMAL MODE
+  // Refresh metadata if missing or incomplete.
+  // ============================================================
+
+  let data = null;
+
+  if (fs.existsSync(jsonPath)) {
+    try {
+      data = JSON.parse(
+        fs.readFileSync(jsonPath, "utf8")
+      );
+    } catch (error) {
+      log(
+        `⚠️ Invalid metadata JSON for ${videoId}: ${error.message}`
+      );
+    }
+  }
+
+  function needsMetadataRefresh(metadata) {
+    const title = String(metadata?.title || "").trim();
+
+    return (
+      !title ||
+      title === videoId ||
+      title === `${videoId}.mp4`
+    );
+  }
+
+  const metadataMissing = !data;
+  const metadataIncomplete = needsMetadataRefresh(data);
+  const needsMetadata = metadataMissing || metadataIncomplete;
 
   const needsThumbnail =
     !findExistingThumbnail(folderPath, videoId) &&
     !fs.existsSync(`${base}.webp`);
 
-  // Normal mode: fetch only if local JSON or thumbnail data is missing.
-  if (needsJson || needsThumbnail) {
-    log(`📥 Fetching video metadata/thumbnail for ${videoId}`);
+  // Fetch metadata only when missing or incomplete.
+  if (needsMetadata || needsThumbnail) {
+    log(
+      needsMetadata
+        ? `📥 Fetching/refreshing metadata for ${videoId}`
+        : `📥 Fetching missing thumbnail for ${videoId}`
+    );
 
     runYtDlp(
       `https://www.youtube.com/watch?v=${videoId}`,
-      base
+      base,
+      needsMetadata
+        ? ["--force-overwrites"]
+        : []
     );
 
     sleepMs(300);
   }
 
+  // ============================================================
+  // VALIDATE REFRESHED METADATA
+  // ============================================================
+
   if (!fs.existsSync(jsonPath)) {
-    throw new Error(`Metadata JSON is unavailable: ${jsonPath}`);
+    throw new Error(
+      `Metadata JSON is unavailable: ${jsonPath}`
+    );
   }
 
-  if (!fs.existsSync(nfoPath)) {
-    const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+  data = JSON.parse(
+    fs.readFileSync(jsonPath, "utf8")
+  );
 
+  if (needsMetadataRefresh(data)) {
+    throw new Error(
+      `Metadata title is still missing or equals YouTube ID: ${videoId}`
+    );
+  }
+
+  // ============================================================
+  // CHECK EXISTING NFO
+  // Repair only if its title is missing or equals the YouTube ID.
+  // ============================================================
+
+  let regenerateNfo = !fs.existsSync(nfoPath);
+
+  if (!regenerateNfo) {
+    try {
+      const existingNfo = fs.readFileSync(
+        nfoPath,
+        "utf8"
+      );
+
+      const titleMatch = existingNfo.match(
+        /<title>([\s\S]*?)<\/title>/
+      );
+
+      const existingTitle = titleMatch
+        ? titleMatch[1]
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&apos;/g, "'")
+            .trim()
+        : "";
+
+      regenerateNfo =
+        !existingTitle ||
+        existingTitle === videoId ||
+        existingTitle === `${videoId}.mp4`;
+    } catch (error) {
+      log(
+        `⚠️ Could not read existing NFO for ${videoId}: ${error.message}`
+      );
+
+      regenerateNfo = true;
+    }
+  }
+
+  if (regenerateNfo || needsMetadata) {
     fs.writeFileSync(
       nfoPath,
       generateVideoNfo(data),
       "utf8"
     );
 
-    log(`✅ Created video NFO: ${videoId}`);
+    log(
+      `✅ ${regenerateNfo ? "Created/repaired" : "Updated"} video NFO: ${videoId}`
+    );
+  } else {
+    log(`⏭️ Existing NFO is valid; preserving: ${videoId}`);
   }
 
-  let thumbnailStatus;
+  // ============================================================
+  // THUMBNAIL PROCESSING
+  // ============================================================
+
+  let thumbnailStatus = "missing";
 
   try {
-    thumbnailStatus = await ensureVideoThumbnail(folderPath, videoId);
+    thumbnailStatus = await ensureVideoThumbnail(
+      folderPath,
+      videoId
+    );
   } catch (error) {
-    log(`⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`);
+    log(
+      `⚠️ Thumbnail processing failed for ${videoId}: ${error.message}`
+    );
+
     thumbnailStatus = "pending";
   }
 
-  if (REQUIRE_THUMBNAIL && thumbnailStatus !== "completed") {
-    throw new Error(`Required thumbnail is not available for ${videoId}`);
+  if (
+    REQUIRE_THUMBNAIL &&
+    thumbnailStatus !== "completed"
+  ) {
+    throw new Error(
+      `Required thumbnail is not available for ${videoId}`
+    );
   }
 
   return {
@@ -502,6 +638,7 @@ async function processVideo(filePath) {
     thumbnailStatus
   };
 }
+
 
 // ============================================================
 // TRACKING HELPERS
