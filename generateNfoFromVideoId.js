@@ -91,24 +91,14 @@ function toUploadDate(value) {
     : "";
 }
 
-function getCurrentIndianWeek() {
+function getCurrentIndianMonthDay() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: TZ,
-    year: "numeric",
     month: "2-digit",
     day: "2-digit"
   }).formatToParts(new Date());
   const dateParts = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
-  const date = new Date(Date.UTC(
-    Number(dateParts.year),
-    Number(dateParts.month) - 1,
-    Number(dateParts.day)
-  ));
-
-  // ISO week number, calculated from the calendar date in Indian time.
-  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  return Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  return Number(`${dateParts.month}${dateParts.day}`);
 }
 
 function getEpisodeNumber(folderPath, nfoPath, season) {
@@ -471,7 +461,7 @@ async function processVideo(filePath) {
 
   const jsonPath = `${base}.info.json`;
   const nfoPath = `${base}.nfo`;
-  const season = getCurrentIndianWeek();
+  const season = getCurrentIndianMonthDay();
   const episode = getEpisodeNumber(folderPath, nfoPath, season);
 
   if (!fs.existsSync(filePath)) {
