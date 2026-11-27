@@ -91,6 +91,57 @@ function toUploadDate(value) {
     : "";
 }
 
+function getCurrentIndianWeek() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const dateParts = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const date = new Date(Date.UTC(
+    Number(dateParts.year),
+    Number(dateParts.month) - 1,
+    Number(dateParts.day)
+  ));
+
+  // ISO week number, calculated from the calendar date in Indian time.
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+}
+
+function getEpisodeNumber(folderPath, nfoPath, season) {
+  if (fs.existsSync(nfoPath)) {
+    const existingNfo = fs.readFileSync(nfoPath, "utf8");
+    const existingSeason = Number(existingNfo.match(/<season>\s*(\d+)\s*<\/season>/)?.[1]);
+    const existingEpisode = Number(existingNfo.match(/<episode>\s*(\d+)\s*<\/episode>/)?.[1]);
+    if (existingSeason === season && Number.isInteger(existingEpisode) && existingEpisode > 0) {
+      return existingEpisode;
+    }
+  }
+
+  let highestEpisode = 0;
+  for (const filename of fs.readdirSync(folderPath)) {
+    if (!filename.toLowerCase().endsWith(".nfo")) continue;
+    const candidatePath = path.join(folderPath, filename);
+    if (candidatePath === nfoPath) continue;
+
+    try {
+      const contents = fs.readFileSync(candidatePath, "utf8");
+      const candidateSeason = Number(contents.match(/<season>\s*(\d+)\s*<\/season>/)?.[1]);
+      const candidateEpisode = Number(contents.match(/<episode>\s*(\d+)\s*<\/episode>/)?.[1]);
+      if (candidateSeason === season && Number.isInteger(candidateEpisode)) {
+        highestEpisode = Math.max(highestEpisode, candidateEpisode);
+      }
+    } catch {
+      // Ignore unreadable or non-episode NFO files in the channel folder.
+    }
+  }
+
+  return highestEpisode + 1;
+}
+
 function needsMetadataRefresh(data, videoId) {
   const title = String(data?.title || "").trim();
 
@@ -107,7 +158,7 @@ function needsMetadataRefresh(data, videoId) {
 
 
 
-function generateVideoNfo(data, existingDateAdded = "") {
+function generateVideoNfo(data, existingDateAdded = "", season, episode) {
   const videoId = data.id || data.youtubeId || "";
   const title = data.title || videoId;
 
@@ -167,8 +218,8 @@ const dateAdded = existingDateAdded
   <dateadded>${dateAdded}</dateadded>
   <year>${year}</year>
 ${runtimeXml}
-  <season>1</season>
-  <episode>0</episode>
+  <season>${season}</season>
+  <episode>${episode}</episode>
   <uniqueid type="youtube" default="true">${escapeXml(videoId)}</uniqueid>
 ${genreXml}
 ${tagXml}
@@ -420,6 +471,8 @@ async function processVideo(filePath) {
 
   const jsonPath = `${base}.info.json`;
   const nfoPath = `${base}.nfo`;
+  const season = getCurrentIndianWeek();
+  const episode = getEpisodeNumber(folderPath, nfoPath, season);
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`Video file not found: ${filePath}`);
@@ -443,7 +496,7 @@ const existingDateAdded = getExistingDateAdded(nfoPath);
 
 fs.writeFileSync(
   nfoPath,
-  generateVideoNfo(data, existingDateAdded),
+  generateVideoNfo(data, existingDateAdded, season, episode),
   "utf8"
 );
 
@@ -601,7 +654,7 @@ const existingDateAdded = getExistingDateAdded(nfoPath);
 
 fs.writeFileSync(
   nfoPath,
-  generateVideoNfo(data, existingDateAdded),
+  generateVideoNfo(data, existingDateAdded, season, episode),
   "utf8"
 );
 
